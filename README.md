@@ -159,6 +159,14 @@ export INPUT_PATH=/path/to/original/MiniCPM-V-4.6
 ./llm_build_ax650.sh
 ```
 
+如果需要编译 GPTQ 权重，请从 `openbmb/MiniCPM-V-4.6-GPTQ` 获取原始 GPTQ 模型，并显式指定输出目录：
+
+```bash
+git clone https://huggingface.co/openbmb/MiniCPM-V-4.6-GPTQ /path/to/original/MiniCPM-V-4.6-GPTQ
+export INPUT_PATH=/path/to/original/MiniCPM-V-4.6-GPTQ
+./llm_build_ax650.sh ../python/MiniCPM-V-4.6-GPTQ_axmodel
+```
+
 脚本默认输出到：
 
 ```text

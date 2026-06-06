@@ -1,8 +1,9 @@
 # MiniCPM-V-4.6 模型转换与编译
 
-本文档描述 `openbmb/MiniCPM-V-4.6` 在 AXERA 平台上的开发侧工作流，覆盖以下内容：
+本文档描述 `openbmb/MiniCPM-V-4.6` 及其 GPTQ 版本在 AXERA 平台上的开发侧工作流，覆盖以下内容：
 
 - LLM 主干 `pulsar2 llm_build` 编译
+- BF16 / GPTQ 输入权重来源
 - 编译输出目录约定
 - 编译产物的板端加载检查
 - 与 Hugging Face 发布包的产物同步关系
@@ -27,7 +28,7 @@ model_convert/
 `pulsar2 llm_build` 相关命令需要 AXERA NPU 编译环境。请先准备：
 
 - 可直接执行 `pulsar2 llm_build` 的 shell 环境
-- 原始 Hugging Face 模型目录：`openbmb/MiniCPM-V-4.6`
+- 原始 Hugging Face 模型目录：`openbmb/MiniCPM-V-4.6` 或 `openbmb/MiniCPM-V-4.6-GPTQ`
 - 已安装 `pulsar2 llm_build` 依赖的 Python/conda 环境
 
 脚本通过环境变量接收路径：
@@ -42,7 +43,7 @@ export INPUT_PATH=/path/to/openbmb/MiniCPM-V-4.6
 
 其中：
 
-- `INPUT_PATH`：原始 Hugging Face 模型目录
+- `INPUT_PATH`：原始 Hugging Face 模型目录；可以是 BF16 版本，也可以是 GPTQ 版本
 - `CONDA_SH` / `CONDA_ENV`：可选，用于激活编译环境；如果当前 shell 已经在正确环境中，可以不设置
 
 下文所有脚本默认以 `model_convert/` 为当前工作目录。
@@ -65,6 +66,8 @@ export INPUT_PATH=/path/to/openbmb/MiniCPM-V-4.6
 
 | Item | Value |
 |---|---|
+| 输入权重 | `openbmb/MiniCPM-V-4.6` / `openbmb/MiniCPM-V-4.6-GPTQ` |
+| GPTQ 量化格式 | W4A16 GPTQModel upstream checkpoint |
 | `model_type` | `qwen3_5_text` |
 | `hidden_state_type` | `bf16` |
 | `prefill_len` | `128` |
@@ -76,16 +79,27 @@ export INPUT_PATH=/path/to/openbmb/MiniCPM-V-4.6
 
 `FLOAT_MATMUL_USE_CONV_EU=1` 是当前 AX650 验证中使用的配置，可明显改善 TTFT。
 
-## 准备原始模型
+## 准备输入模型
 
-从 Hugging Face 下载原始模型权重，并用 `$INPUT_PATH` 指向该目录：
+### BF16 权重
+
+从 Hugging Face 下载 BF16 原始模型权重，并用 `$INPUT_PATH` 指向该目录：
 
 ```bash
 git clone https://huggingface.co/openbmb/MiniCPM-V-4.6 /path/to/original/MiniCPM-V-4.6
 export INPUT_PATH=/path/to/original/MiniCPM-V-4.6
 ```
 
-原始权重不提交到本仓库。
+### GPTQ 权重
+
+GPTQ 输入权重从 `openbmb/MiniCPM-V-4.6-GPTQ` 获取。该仓库是官方提供的 W4A16 GPTQModel 量化版本：
+
+```bash
+git clone https://huggingface.co/openbmb/MiniCPM-V-4.6-GPTQ /path/to/original/MiniCPM-V-4.6-GPTQ
+export INPUT_PATH=/path/to/original/MiniCPM-V-4.6-GPTQ
+```
+
+BF16 和 GPTQ 原始权重都不提交到本仓库。
 
 ## 编译 LLM axmodel
 
@@ -101,7 +115,13 @@ export INPUT_PATH=/path/to/original/MiniCPM-V-4.6
 ../python/MiniCPM-V-4.6_axmodel
 ```
 
-也可以显式指定输出目录：
+如果当前 `INPUT_PATH` 指向 GPTQ 权重，建议显式指定 GPTQ 输出目录，避免和 BF16 产物混淆：
+
+```bash
+./llm_build_ax650.sh ../python/MiniCPM-V-4.6-GPTQ_axmodel
+```
+
+也可以显式指定任意输出目录：
 
 ```bash
 ./llm_build_ax650.sh /path/to/output_axmodel
@@ -145,6 +165,12 @@ MiniCPM-V-4.6_axmodel/
 ├── minicpm_v46_tokenizer.txt
 ├── config.json
 └── post_config.json
+```
+
+GPTQ 编译输出的文件名结构相同，建议使用独立目录名，例如：
+
+```text
+MiniCPM-V-4.6-GPTQ_axmodel/
 ```
 
 这些文件属于编译产物，不提交到 `.axera` 仓库。  
