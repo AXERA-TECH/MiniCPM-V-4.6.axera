@@ -4,12 +4,6 @@ import torch
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 
-DEFAULT_MODEL_PATH = (
-    "/data/tmp/yongqiang/nfs/auto_model_deployment/"
-    "Minicpm-V-4.6-hf-original/MiniCPM-V-4.6"
-)
-
-
 def resolve_dtype(name: str):
     if name == "auto":
         return "auto"
@@ -28,7 +22,7 @@ def resolve_device(name: str):
 
 def main():
     parser = argparse.ArgumentParser(description="MiniCPM-V-4.6 official torch text-only inference")
-    parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--model-path", required=True, help="Path to the original openbmb/MiniCPM-V-4.6 Hugging Face model")
     parser.add_argument("--prompt", default="你好，请做一个简短自我介绍。")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dtype", default="auto", choices=["auto", "float32", "float16", "bfloat16"])

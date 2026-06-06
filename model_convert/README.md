@@ -24,28 +24,26 @@ model_convert/
 
 ## 环境准备
 
-`pulsar2 llm_build` 相关命令需要 AXERA NPU 开发环境。请先准备：
+`pulsar2 llm_build` 相关命令需要 AXERA NPU 编译环境。请先准备：
 
-- npu-codebase：包含 `script/npu_dev` 和 `pulsar2 llm_build` 集成代码
+- 可直接执行 `pulsar2 llm_build` 的 shell 环境
 - 原始 Hugging Face 模型目录：`openbmb/MiniCPM-V-4.6`
-- 可用的 `npu` conda 环境或等价 Python 环境
+- 已安装 `pulsar2 llm_build` 依赖的 Python/conda 环境
 
 脚本通过环境变量接收路径：
 
 ```bash
-export CODEBASE_ROOT=/path/to/npu-codebase
-export DEPLOY_ROOT=/path/to/auto_model_deployment
 export INPUT_PATH=/path/to/openbmb/MiniCPM-V-4.6
-export CONDA_SH=/path/to/conda.sh
-export CONDA_ENV=npu
+
+# 如果当前 shell 还没有进入编译环境，可以额外设置：
+# export CONDA_SH=/path/to/conda.sh
+# export CONDA_ENV=npu
 ```
 
 其中：
 
-- `CODEBASE_ROOT`：npu-codebase 根目录
-- `DEPLOY_ROOT`：模型部署工作区根目录
 - `INPUT_PATH`：原始 Hugging Face 模型目录
-- `CONDA_SH` / `CONDA_ENV`：用于激活编译环境
+- `CONDA_SH` / `CONDA_ENV`：可选，用于激活编译环境；如果当前 shell 已经在正确环境中，可以不设置
 
 下文所有脚本默认以 `model_convert/` 为当前工作目录。
 
@@ -54,11 +52,12 @@ export CONDA_ENV=npu
 如果你的目标是复现当前 LLM 编译流程，建议按下面顺序执行：
 
 1. 准备原始 Hugging Face 权重目录
-2. 设置 `CODEBASE_ROOT`、`DEPLOY_ROOT`、`INPUT_PATH`、`CONDA_SH`、`CONDA_ENV`
-3. 执行 `./llm_build_ax650.sh`
-4. 在 AX650 板端用 `ax_run_model` 检查单个子图是否能加载
-5. 将编译输出整理到 Hugging Face 发布包布局
-6. 使用发布包中的 `axllm serve` 做端到端验证
+2. 确认当前 shell 可以执行 `pulsar2 llm_build`
+3. 设置 `INPUT_PATH`，必要时设置 `CONDA_SH`、`CONDA_ENV`
+4. 执行 `./llm_build_ax650.sh`
+5. 在 AX650 板端用 `ax_run_model` 检查单个子图是否能加载
+6. 将编译输出整理到 Hugging Face 发布包布局
+7. 使用发布包中的 `axllm serve` 做端到端验证
 
 ## 已验证配置
 
@@ -79,11 +78,11 @@ export CONDA_ENV=npu
 
 ## 准备原始模型
 
-从 Hugging Face 下载原始模型权重。以下示例假设克隆到仓库同级工作区，并用 `$INPUT_PATH` 引用：
+从 Hugging Face 下载原始模型权重，并用 `$INPUT_PATH` 指向该目录：
 
 ```bash
-git clone https://huggingface.co/openbmb/MiniCPM-V-4.6 ../../Minicpm-V-4.6-hf-original/MiniCPM-V-4.6
-export INPUT_PATH=../../Minicpm-V-4.6-hf-original/MiniCPM-V-4.6
+git clone https://huggingface.co/openbmb/MiniCPM-V-4.6 /path/to/original/MiniCPM-V-4.6
+export INPUT_PATH=/path/to/original/MiniCPM-V-4.6
 ```
 
 原始权重不提交到本仓库。

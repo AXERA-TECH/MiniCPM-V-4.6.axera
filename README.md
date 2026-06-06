@@ -155,6 +155,7 @@ curl http://127.0.0.1:18080/v1/chat/completions \
 
 ```bash
 cd model_convert
+export INPUT_PATH=/path/to/original/MiniCPM-V-4.6
 ./llm_build_ax650.sh
 ```
 

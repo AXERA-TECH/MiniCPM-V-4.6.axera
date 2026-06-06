@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${CODEBASE_ROOT:=/home/baiyongqiang/local_space/npu-codebase}"
-: "${DEPLOY_ROOT:=/data/tmp/yongqiang/nfs/auto_model_deployment}"
-: "${INPUT_PATH:=$DEPLOY_ROOT/Minicpm-V-4.6-hf-original/MiniCPM-V-4.6}"
-: "${OUTPUT_PATH:=$DEPLOY_ROOT/MiniCPM-V-4.6.axera/python/MiniCPM-V-4.6_axmodel}"
-: "${CONDA_SH:=/home/baiyongqiang/miniforge-pypy3/etc/profile.d/conda.sh}"
-: "${CONDA_ENV:=npu}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
-source "$CONDA_SH"
-conda activate "$CONDA_ENV"
-cd "$CODEBASE_ROOT"
-source script/npu_dev
+: "${INPUT_PATH:?Please set INPUT_PATH to your original openbmb/MiniCPM-V-4.6 Hugging Face model path}"
 
-if [ "${1:-}" != "" ]; then
-  OUTPUT_PATH="$1"
+if [ -n "${CONDA_SH:-}" ]; then
+  source "$CONDA_SH"
+  conda activate "${CONDA_ENV:-npu}"
 fi
+
+if ! command -v pulsar2 >/dev/null 2>&1; then
+  echo "pulsar2 not found in PATH. Please activate AXERA NPU build environment first." >&2
+  exit 1
+fi
+
+OUTPUT_PATH="${1:-${OUTPUT_PATH:-$REPO_ROOT/python/MiniCPM-V-4.6_axmodel}}"
 
 FLOAT_MATMUL_USE_CONV_EU=1 pulsar2 llm_build \
   --input_path "$INPUT_PATH" \
