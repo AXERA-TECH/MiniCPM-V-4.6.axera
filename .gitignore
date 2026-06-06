@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+vision_cache/
+*.tmp
+*.onnx
+*.pth
+*.pkl
+*.bin
+*.npy
+*.axmodel
+*.axmodel.synth.bak
+*.synth.tar.bak
+*_axmodel/
+*.safetensors
+compiled*/
+build*/
+*tmp/
