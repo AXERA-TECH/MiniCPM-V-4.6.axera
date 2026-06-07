@@ -1,0 +1,5 @@
+torch
+torchvision
+transformers[torch]>=5.7.0
+av
+onnx

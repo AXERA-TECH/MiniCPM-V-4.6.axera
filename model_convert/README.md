@@ -3,6 +3,7 @@
 本文档描述 `openbmb/MiniCPM-V-4.6` 及其 GPTQ 版本在 AXERA 平台上的开发侧工作流，覆盖以下内容：
 
 - LLM 主干 `pulsar2 llm_build` 编译
+- 固定 shape Vision ONNX 导出（发布包默认 `448x448 / 16x`）
 - BF16 / GPTQ 输入权重来源
 - 编译输出目录约定
 - 编译产物的板端加载检查
@@ -17,15 +18,49 @@
 ```text
 model_convert/
 ├── README.md
+├── requirements.txt
+├── export_onnx.py          # 固定 shape Vision ONNX 导出
 └── llm_build_ax650.sh      # AX650 LLM 主干编译脚本
 ```
 
-当前仓库只提供 LLM 主干编译脚本。  
-`MiniCPM-V-4.6` 的视觉编码器产物已经在 Hugging Face 发布包中提供，但本目录不包含 VIT ONNX 导出、校准或重新编译脚本。
+当前仓库提供：
+
+- LLM 主干 `pulsar2 llm_build` 编译脚本
+- 与当前发布包一致、且支持其他固定 shape 的 Vision ONNX 导出脚本
+
+当前仓库暂不提供视觉 calibration 与 pulsar2 编译脚本。  
+如果你的目标只是复现板端运行，请优先直接使用 Hugging Face 发布包中的已验证 `minicpmv4_6_vision_448.axmodel`。
 
 ## 环境准备
 
-`pulsar2 llm_build` 相关命令需要 AXERA NPU 编译环境。请先准备：
+Vision ONNX 导出与 `pulsar2 llm_build` 分别依赖不同环境。
+
+Vision ONNX 导出请先准备 `hf` 环境：
+
+- `transformers>=5.7.0`
+- `torch`
+- `torchvision`
+- `av`
+- `onnx`
+
+推荐按下面方式进入环境并安装依赖：
+
+```bash
+env -u PYTHONPATH -u PYTHONHOME bash -lc '
+source /path/to/conda.sh
+conda activate hf
+cd /path/to/MiniCPM-V-4.6.axera/model_convert
+python -m pip install -r requirements.txt
+'
+```
+
+说明：
+
+- `source /path/to/conda.sh` 仅表示进入你自己的 conda 环境初始化脚本，不依赖任何私有路径
+- 使用 `env -u PYTHONPATH -u PYTHONHOME` 是为了避免其他编译环境污染 `hf` 环境
+- 如果你的 shell 没有额外注入 `PYTHONPATH/PYTHONHOME`，也可以在 `conda activate hf` 后直接执行命令
+
+`pulsar2 llm_build` 相关命令需要 AXERA NPU 编译环境。请另外准备：
 
 - 可直接执行 `pulsar2 llm_build` 的 shell 环境
 - 原始 Hugging Face 模型目录：`openbmb/MiniCPM-V-4.6` 或 `openbmb/MiniCPM-V-4.6-GPTQ`
@@ -53,12 +88,72 @@ export INPUT_PATH=/path/to/openbmb/MiniCPM-V-4.6
 如果你的目标是复现当前 LLM 编译流程，建议按下面顺序执行：
 
 1. 准备原始 Hugging Face 权重目录
-2. 确认当前 shell 可以执行 `pulsar2 llm_build`
-3. 设置 `INPUT_PATH`，必要时设置 `CONDA_SH`、`CONDA_ENV`
-4. 执行 `./llm_build_ax650.sh`
-5. 在 AX650 板端用 `ax_run_model` 检查单个子图是否能加载
-6. 将编译输出整理到 Hugging Face 发布包布局
-7. 使用发布包中的 `axllm serve` 做端到端验证
+2. 如需重新导出视觉 ONNX，先执行 `python export_onnx.py`
+3. 确认当前 shell 可以执行 `pulsar2 llm_build`
+4. 设置 `INPUT_PATH`，必要时设置 `CONDA_SH`、`CONDA_ENV`
+5. 执行 `./llm_build_ax650.sh`
+6. 在 AX650 板端用 `ax_run_model` 检查单个子图是否能加载
+7. 将编译输出整理到 Hugging Face 发布包布局
+8. 使用发布包中的 `axllm serve` 做端到端验证
+
+## 导出固定 Vision ONNX
+
+当前发布包使用固定 `448x448` 输入、`patch_size=14`、`downsample_mode=16x` 的 Vision 编码器。  
+`export_onnx.py` 默认导出这一固定 profile，也支持导出其他满足约束的 fixed-shape Vision ONNX。
+
+默认 `448x448` 导出命令：
+
+```bash
+env -u PYTHONPATH -u PYTHONHOME bash -lc '
+source /path/to/conda.sh
+conda activate hf
+cd /path/to/MiniCPM-V-4.6.axera/model_convert
+python export_onnx.py \
+  --model /path/to/openbmb/MiniCPM-V-4.6 \
+  --output ./vit-models/minicpmv4_6_vision_448.onnx
+'
+```
+
+其他 fixed shape 示例（例如 `392x392`）：
+
+```bash
+env -u PYTHONPATH -u PYTHONHOME bash -lc '
+source /path/to/conda.sh
+conda activate hf
+cd /path/to/MiniCPM-V-4.6.axera/model_convert
+python export_onnx.py \
+  --model /path/to/openbmb/MiniCPM-V-4.6 \
+  --output ./vit-models/minicpmv4_6_vision_392.onnx \
+  --input-shape 392x392
+'
+```
+
+导出完成后会同时生成：
+
+- `vit-models/minicpmv4_6_vision_448.onnx`
+- `vit-models/minicpmv4_6_vision_448.json`
+- 与 `.onnx` 同目录的一组 external data 权重文件
+
+其中 `.json` 记录本次固定 profile 的输入输出形状：
+
+- 输入 `pixel_values`: `[1, 3, 14, 14336]`
+- 固定 `target_sizes`: `[[32, 32]]`
+- 输出 `image_features`: `[1, 64, 1024]`
+
+说明：
+
+- 该脚本依赖 `transformers>=5.7.0`
+- 导出时默认使用 `--attn-implementation eager`，以规避当前 `sdpa + enable_gqa=True` 的 ONNX 导出限制
+- 由于模型较大，PyTorch ONNX 导出通常会使用 external data 格式；请整体保留输出目录，不要只拷贝单个 `.onnx`
+- 当前只导出单图 fixed-shape Vision 编码器，不覆盖视频专用重新打包逻辑
+- 当前仓库不提供 Vision calibration 与 axmodel 编译脚本；如需直接运行，请继续使用已验证发布包
+
+shape 约束：
+
+- `height` 和 `width` 必须能被 `patch_size * 4` 整除
+- 当前默认 `patch_size=14`，因此输入尺寸必须能被 `56` 整除
+- `448x448`、`392x392`、`560x560` 是有效示例
+- `384x384` 不是有效 shape，不能用于当前 fixed-shape patch merge 导出路径
 
 ## 已验证配置
 

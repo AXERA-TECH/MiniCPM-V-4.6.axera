@@ -8,15 +8,20 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
-from axengine import InferenceSession
 from ml_dtypes import bfloat16
-from transformers import AutoProcessor
+from transformers import AutoTokenizer
+
+from minicpmv46_helper import cast_vision_input
+from minicpmv46_helper import image_token_count_for_fixed_shape
+from minicpmv46_helper import load_minicpmv46_meta
+from minicpmv46_helper import preprocess_fixed_image
+from minicpmv46_helper import render_single_image_prompt
+from minicpmv46_helper import render_text_prompt
 
 
 def resolve_default_hf_model() -> str:
     base_dir = os.path.dirname(__file__)
     candidates = [
-        os.path.join(base_dir, "minicpm_v46_tokenizer"),
         os.path.join(base_dir, "MiniCPM-V-4.6"),
         os.path.join(base_dir, "MiniCPM-V-4.6-GPTQ"),
     ]
@@ -27,6 +32,12 @@ def resolve_default_hf_model() -> str:
 
 
 DEFAULT_HF_MODEL = resolve_default_hf_model()
+
+
+def load_inference_session():
+    from axengine import InferenceSession
+
+    return InferenceSession
 
 
 def release_ax_inference_session(session):
@@ -155,10 +166,12 @@ class MiniCPMTextAxModelRunner:
         axmodel_dir: str,
         embed_bin: Optional[str],
         max_layers: Optional[int],
+        vision_axmodel: Optional[str] = None,
         kv_cache_len: int = 255,
     ):
         self.hf_model = hf_model
         self.axmodel_dir = axmodel_dir
+        self.meta = load_minicpmv46_meta(hf_model)
         self.text_cfg, self.eos_token_id = load_text_config(hf_model)
         self.hidden_size = int(self.text_cfg["hidden_size"])
         self.vocab_size = int(self.text_cfg["vocab_size"])
@@ -169,8 +182,11 @@ class MiniCPMTextAxModelRunner:
         self.head_dim = int(self.text_cfg.get("head_dim") or (self.hidden_size // self.num_attention_heads))
         self.full_attn_kv_dim = self.num_key_value_heads * self.head_dim
 
-        self.processor = AutoProcessor.from_pretrained(hf_model, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
         self.layer_files = detect_layer_files(axmodel_dir, max_layers=max_layers)
+        self.vision_axmodel = self.resolve_vision_axmodel(vision_axmodel)
+        self.vision_session = None
+        self.InferenceSession = load_inference_session()
 
         if embed_bin is None:
             candidate = os.path.join(axmodel_dir, "model.embed_tokens.weight.bfloat16.bin")
@@ -183,8 +199,9 @@ class MiniCPMTextAxModelRunner:
         self.embed_matrix = np.memmap(embed_bin, mode="r", dtype=np.uint16).view(bfloat16).reshape(
             self.vocab_size, self.hidden_size
         )
+        self.image_token_id = int(self.tokenizer.encode(self.meta.image_token, add_special_tokens=False)[0])
 
-        self.decoder_sessions = [InferenceSession(path) for path in self.layer_files.layer_paths]
+        self.decoder_sessions = [self.InferenceSession(path) for path in self.layer_files.layer_paths]
         self.post_session = None
         self._closed = False
         atexit.register(self.close)
@@ -252,23 +269,43 @@ class MiniCPMTextAxModelRunner:
             release_ax_inference_session(session)
         if getattr(self, "post_session", None) is not None:
             release_ax_inference_session(self.post_session)
+        if getattr(self, "vision_session", None) is not None:
+            release_ax_inference_session(self.vision_session)
         self.decoder_sessions = []
         self.post_session = None
+        self.vision_session = None
         self._closed = True
 
+    def resolve_vision_axmodel(self, explicit_path: Optional[str]) -> Optional[str]:
+        if explicit_path:
+            if not os.path.exists(explicit_path):
+                raise FileNotFoundError(f"vision axmodel not found: {explicit_path}")
+            return explicit_path
+        candidates = [
+            os.path.join(self.axmodel_dir, "minicpmv4_6_vision_448.axmodel"),
+            os.path.join(os.path.dirname(self.axmodel_dir), "minicpmv4_6_vision_448.axmodel"),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        return None
+
+    def get_vision_session(self):
+        if self.vision_axmodel is None:
+            raise RuntimeError(
+                "vision axmodel is required for image inference; pass --vision-axmodel or place "
+                "minicpmv4_6_vision_448.axmodel next to --axmodel-dir"
+            )
+        if self.vision_session is None:
+            self.vision_session = self.InferenceSession(self.vision_axmodel)
+        return self.vision_session
+
     def tokenize_prompt(self, prompt: str) -> List[int]:
-        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="np",
-        )
-        return inputs["input_ids"][0].astype(np.int64).tolist()
+        prompt_text = render_text_prompt(prompt)
+        return self.tokenizer.encode(prompt_text, add_special_tokens=False)
 
     def decode_tokens(self, token_ids: Sequence[int]) -> str:
-        return self.processor.decode(
+        return self.tokenizer.decode(
             list(token_ids),
             skip_special_tokens=False,
             clean_up_tokenization_spaces=False,
@@ -276,6 +313,61 @@ class MiniCPMTextAxModelRunner:
 
     def embed_token(self, token_id: int) -> np.ndarray:
         return np.asarray(self.embed_matrix[int(token_id)], dtype=self.hidden_dtype).reshape(1, 1, self.hidden_size)
+
+    def embed_tokens(self, token_ids: Sequence[int]) -> np.ndarray:
+        ids = np.asarray(list(token_ids), dtype=np.int64)
+        return np.asarray(self.embed_matrix[ids], dtype=self.hidden_dtype)
+
+    def build_prompt_inputs(self, prompt: str, image_path: Optional[str] = None) -> Tuple[List[int], str, np.ndarray]:
+        if image_path is None:
+            prompt_text = render_text_prompt(prompt)
+            token_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
+            return token_ids, prompt_text, self.embed_tokens(token_ids)
+
+        image_token_count = image_token_count_for_fixed_shape(
+            self.meta.vision_height,
+            self.meta.vision_width,
+            self.meta.vision_patch_size,
+            downsample_mode="16x",
+        )
+        prompt_text = render_single_image_prompt(prompt, self.meta, image_token_count)
+        token_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
+        prompt_embeds = self.embed_tokens(token_ids)
+        placeholder_positions = [idx for idx, token_id in enumerate(token_ids) if int(token_id) == self.image_token_id]
+        vision_features = self.run_vision_image(image_path)
+        if len(placeholder_positions) != vision_features.shape[0]:
+            raise RuntimeError(
+                f"image placeholder count mismatch: placeholders={len(placeholder_positions)} "
+                f"vision_tokens={vision_features.shape[0]}"
+            )
+        prompt_embeds[np.asarray(placeholder_positions, dtype=np.int64)] = np.asarray(
+            vision_features, dtype=self.hidden_dtype
+        )
+        return token_ids, prompt_text, prompt_embeds
+
+    def run_vision_image(self, image_path: str) -> np.ndarray:
+        session = self.get_vision_session()
+        input_meta = session.get_inputs()[0]
+        input_shape = tuple(int(x) for x in input_meta.shape)
+        input_dtype = dtype_from_axengine(input_meta.dtype)
+        raw_patches = preprocess_fixed_image(
+            image_path,
+            self.meta.vision_height,
+            self.meta.vision_width,
+            self.meta.vision_patch_size,
+        )
+        pixel_values = cast_vision_input(
+            raw_patches,
+            input_shape,
+            input_dtype,
+            self.meta.image_mean,
+            self.meta.image_std,
+        )
+        outputs = session.run(None, {input_meta.name: pixel_values})
+        image_features = np.asarray(outputs[0])
+        image_features = image_features.reshape(-1, self.hidden_size)
+        ensure_finite("vision image features", image_features)
+        return image_features
 
     def alloc_layer_states(self) -> Tuple[List[np.ndarray], List[np.ndarray]]:
         k_states = [
@@ -330,6 +422,7 @@ class MiniCPMTextAxModelRunner:
         print("hf_model:", self.hf_model)
         print("axmodel_dir:", self.axmodel_dir)
         print("embed_bin:", self.embed_bin)
+        print("vision_axmodel:", self.vision_axmodel)
         print("num_layers:", len(self.decoder_sessions))
         print("hidden_size:", self.hidden_size)
         print("vocab_size:", self.vocab_size)
@@ -382,19 +475,20 @@ class MiniCPMTextAxModelRunner:
 
     def get_post_session(self):
         if self.post_session is None:
-            self.post_session = InferenceSession(self.layer_files.post_path)
+            self.post_session = self.InferenceSession(self.layer_files.post_path)
         return self.post_session
 
     def run_prefill(self, token_ids: Sequence[int], verbose: bool = False, return_states: bool = False):
+        return self.run_prefill_embeds(self.embed_tokens(token_ids), verbose=verbose, return_states=return_states)
+
+    def run_prefill_embeds(self, prompt_embeds: np.ndarray, verbose: bool = False, return_states: bool = False):
         k_states, v_states = self.alloc_layer_states()
         last_hidden = None
-        for start in range(0, len(token_ids), self.prefill_len):
-            chunk_ids = token_ids[start : start + self.prefill_len]
-            chunk_len = len(chunk_ids)
+        for start in range(0, len(prompt_embeds), self.prefill_len):
+            chunk = np.asarray(prompt_embeds[start : start + self.prefill_len], dtype=self.hidden_dtype)
+            chunk_len = len(chunk)
             data = np.zeros((1, self.prefill_len, self.hidden_size), dtype=self.hidden_dtype)
-            data[0, :chunk_len, :] = np.asarray(
-                self.embed_matrix[np.asarray(chunk_ids, dtype=np.int64)], dtype=self.hidden_dtype
-            )
+            data[0, :chunk_len, :] = chunk
 
             for layer_idx, session in enumerate(self.decoder_sessions):
                 if self.is_linear_layer(layer_idx):
@@ -568,12 +662,25 @@ class MiniCPMTextAxModelRunner:
         limit_prompt_tokens: Optional[int] = None,
         verbose: bool = False,
     ) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray]:
+        return self.decode_replay_prompt_embeds(
+            self.embed_tokens(token_ids),
+            limit_prompt_tokens=limit_prompt_tokens,
+            verbose=verbose,
+        )
+
+    def decode_replay_prompt_embeds(
+        self,
+        prompt_embeds: np.ndarray,
+        limit_prompt_tokens: Optional[int] = None,
+        verbose: bool = False,
+    ) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray]:
         if limit_prompt_tokens is not None:
-            token_ids = token_ids[:limit_prompt_tokens]
+            prompt_embeds = prompt_embeds[:limit_prompt_tokens]
         k_states, v_states = self.alloc_layer_states()
         last_hidden = None
-        for pos, token_id in enumerate(token_ids):
-            last_hidden = self.run_decode_step(self.embed_token(int(token_id)), pos, k_states, v_states, verbose=verbose)
+        for pos, hidden in enumerate(prompt_embeds):
+            hidden = np.asarray(hidden, dtype=self.hidden_dtype).reshape(1, 1, self.hidden_size)
+            last_hidden = self.run_decode_step(hidden, pos, k_states, v_states, verbose=verbose)
         return k_states, v_states, last_hidden
 
     def run_post(self, hidden: np.ndarray) -> np.ndarray:
@@ -587,10 +694,26 @@ class MiniCPMTextAxModelRunner:
         return int(np.argmax(logits))
 
     def generate(self, token_ids: Sequence[int], max_new_tokens: int, prompt_mode: str, verbose: bool = False):
+        return self.generate_from_embeds(
+            token_ids,
+            self.embed_tokens(token_ids),
+            max_new_tokens=max_new_tokens,
+            prompt_mode=prompt_mode,
+            verbose=verbose,
+        )
+
+    def generate_from_embeds(
+        self,
+        token_ids: Sequence[int],
+        prompt_embeds: np.ndarray,
+        max_new_tokens: int,
+        prompt_mode: str,
+        verbose: bool = False,
+    ):
         if prompt_mode == "prefill":
-            k_states, v_states, last_hidden = self.run_prefill(token_ids, verbose=verbose, return_states=True)
+            k_states, v_states, last_hidden = self.run_prefill_embeds(prompt_embeds, verbose=verbose, return_states=True)
         else:
-            k_states, v_states, last_hidden = self.decode_replay_prompt(token_ids, verbose=verbose)
+            k_states, v_states, last_hidden = self.decode_replay_prompt_embeds(prompt_embeds, verbose=verbose)
         prompt_len = len(token_ids)
         generated = []
         for step in range(max_new_tokens):
@@ -613,11 +736,12 @@ class MiniCPMTextAxModelRunner:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="MiniCPM-V-4.6 AX650 text-only axmodel Python runner/debugger"
+        description="MiniCPM-V-4.6 AX650 axmodel Python runner/debugger"
     )
-    parser.add_argument("--hf-model", default=DEFAULT_HF_MODEL, help="Tokenizer/config path for AutoProcessor")
+    parser.add_argument("--hf-model", default=DEFAULT_HF_MODEL, help="Tokenizer/config path")
     parser.add_argument("--axmodel-dir", required=True, help="Compiled axmodel directory")
     parser.add_argument("--embed-bin", default=None, help="Embedding bf16 bin path")
+    parser.add_argument("--vision-axmodel", default=None, help="Optional fixed-shape vision axmodel path for image inference")
     parser.add_argument(
         "--mode",
         default="inspect",
@@ -626,6 +750,7 @@ def parse_args():
     )
     parser.add_argument("--prompt", default="你好，请做一个简短自我介绍。", help="User prompt")
     parser.add_argument("--prompt-file", default=None, help="Read user prompt from a UTF-8 text file")
+    parser.add_argument("--image", default=None, help="Optional local image path; enables single-image prompt injection")
     parser.add_argument("--max-layers", type=int, default=None, help="Only load the first N decoder layers")
     parser.add_argument(
         "--limit-prompt-tokens",
@@ -655,20 +780,21 @@ def main():
         axmodel_dir=args.axmodel_dir,
         embed_bin=args.embed_bin,
         max_layers=args.max_layers,
+        vision_axmodel=args.vision_axmodel,
         kv_cache_len=args.kv_cache_len,
     )
     try:
-        token_ids = runner.tokenize_prompt(args.prompt)
+        token_ids, prompt_text, prompt_embeds = runner.build_prompt_inputs(args.prompt, image_path=args.image)
         print("prompt_token_count:", len(token_ids))
         print("prompt_token_ids:", token_ids)
-        print("prompt_template_repr:", runner.decode_tokens(token_ids).encode("unicode_escape").decode())
+        print("prompt_template_repr:", prompt_text.encode("unicode_escape").decode())
 
         if args.mode == "inspect":
             runner.inspect()
             return
 
         if args.mode == "prefill":
-            hidden = runner.run_prefill(token_ids, verbose=args.verbose)
+            hidden = runner.run_prefill_embeds(prompt_embeds, verbose=args.verbose)
             print("prefill_last_hidden:", tensor_stats(hidden))
             logits = runner.run_post(hidden)
             print("post_logits:", tensor_stats(logits))
@@ -676,8 +802,8 @@ def main():
             return
 
         if args.mode == "decode_replay":
-            _, _, hidden = runner.decode_replay_prompt(
-                token_ids,
+            _, _, hidden = runner.decode_replay_prompt_embeds(
+                prompt_embeds,
                 limit_prompt_tokens=args.limit_prompt_tokens,
                 verbose=args.verbose,
             )
@@ -687,8 +813,9 @@ def main():
             print("greedy_next_token:", runner.greedy_next_token(hidden))
             return
 
-        runner.generate(
+        runner.generate_from_embeds(
             token_ids,
+            prompt_embeds,
             max_new_tokens=args.max_new_tokens,
             prompt_mode=args.prompt_mode,
             verbose=args.verbose,

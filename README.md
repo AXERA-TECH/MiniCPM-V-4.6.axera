@@ -17,18 +17,19 @@
 - 支持的板端能力：
   - 文本对话
   - 长 prompt 多 chunk prefill
-  - 单图图文对话
+  - 单图图文调试
   - 视频理解
-- 当前 `python/infer_axmodel.py` 仅用于 LLM 文本链路调试，不提供图像或视频端到端推理
-- 当前仓库不提供 VIT 重新导出、校准和编译脚本；视觉产物请使用 Hugging Face 发布包中的已验证 axmodel
-- `python/infer_torch.py` 脚本仅用于 `x86 + HuggingFace/Torch` 文本参考验证，不属于板端复现主流程
+- `python/infer_axmodel.py` 支持板端文本链路调试，以及在提供 `minicpmv4_6_vision_448.axmodel` 时做单图 prompt 注入调试
+- `model_convert/export_onnx.py` 提供固定 shape 视觉编码器的 ONNX 导出脚本，发布包默认使用 `448x448 / 16x`
+- 当前仓库仍不提供视觉 calibration 与 pulsar2 编译脚本；视觉产物请优先使用 Hugging Face 发布包中的已验证 axmodel
+- `python/infer_torch.py` 为 `x86 + HuggingFace/Torch` 官方多模态参考脚本，依赖 `transformers>=5.7.0`
 
 ## 仓库职责
 
 ```text
 .
-├── python/         # tokenizer/config、文本调试脚本和 Torch 参考脚本
-├── model_convert/  # LLM 主干编译脚本和转换说明
+├── python/         # tokenizer/config、AX650 调试脚本、Torch 参考脚本
+├── model_convert/  # LLM 主干编译脚本、固定 shape vision ONNX 导出说明
 └── assets/         # Demo 或 smoke test 使用的示例素材
 ```
 
@@ -78,8 +79,13 @@ export PYTHONPATH="${PYDEPS_DIR:+$PYDEPS_DIR:}$PYTHONPATH"
 
 ### 3. 多模态运行说明
 
-本仓库的 Python 调试脚本不负责图像或视频端到端推理。  
-图像和视频能力通过 `axllm serve` 在 Hugging Face 发布包中验证；对应 VIT axmodel 和 runtime config 也只随发布包提供。
+本仓库的 Python 调试脚本不追求完整替代 `axllm serve`。  
+当前板端 `python/infer_axmodel.py` 主要覆盖：
+
+- 文本 LLM 主干逐层调试
+- 单图 prompt 占位符注入与 vision axmodel 输出检查
+
+图像和视频的完整端到端能力仍建议通过 Hugging Face 发布包中的 `axllm serve` 验证。
 
 ## 板端复现
 
@@ -107,7 +113,7 @@ python3 infer_axmodel.py \
 - 文本调试脚本不加载 VIT，不支持图片或视频输入
 - 如果你本地使用的是其他 LLM 编译输出目录，请通过 `--axmodel-dir` 显式传入
 
-### x86 Torch 文本参考
+### x86 Torch 多模态参考
 
 ```bash
 cd python
@@ -119,8 +125,41 @@ python3 infer_torch.py \
 
 说明：
 
-- 该命令用于对齐 tokenizer、chat template 和文本输出
+- 该脚本依赖 `transformers>=5.7.0`
+- 文本、单图和视频都通过官方 Hugging Face `processor/model.generate()` 路径执行
 - 该命令不属于板端部署流程
+
+单图示例：
+
+```bash
+python3 infer_torch.py \
+  --model-path /path/to/openbmb/MiniCPM-V-4.6 \
+  --image ../assets/smoke_image.png \
+  --prompt "请简要描述这张图片。"
+```
+
+### 板端单图 `.axmodel` 调试
+
+```bash
+cd python
+
+python3 infer_axmodel.py \
+  --hf-model ./MiniCPM-V-4.6 \
+  --axmodel-dir ./MiniCPM-V-4.6_axmodel \
+  --vision-axmodel /path/to/minicpmv4_6_vision_448.axmodel \
+  --image ../assets/smoke_image.png \
+  --mode generate \
+  --prompt "请简要描述这张图片。" \
+  --prompt-mode prefill \
+  --max-new-tokens 64 \
+  --kv-cache-len 2047
+```
+
+说明：
+
+- 该模式默认覆盖单图固定 `448x448 / 16x` prompt 注入调试
+- 如果不传 `--vision-axmodel`，脚本只执行纯文本链路
+- 视频理解仍建议使用发布包 `axllm serve`
 
 ### 发布包 `axllm serve` 验证
 
