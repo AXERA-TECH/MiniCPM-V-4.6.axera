@@ -26,7 +26,7 @@ model_convert/
 当前仓库提供：
 
 - LLM 主干 `pulsar2 llm_build` 编译脚本
-- 与当前发布包一致、且支持其他固定 shape 的 Vision ONNX 导出脚本
+- 支持固定 shape Vision ONNX 导出，并已验证可编译到 AX650 的导出脚本
 
 当前仓库暂不提供视觉 calibration 与 pulsar2 编译脚本。  
 如果你的目标只是复现板端运行，请优先直接使用 Hugging Face 发布包中的已验证 `minicpmv4_6_vision_448.axmodel`。
@@ -123,13 +123,15 @@ python export_onnx.py \
 其中 `.json` 记录本次固定 profile 的输入输出形状：
 
 - 输入 `pixel_values`: `[1, 3, 14, 14336]`
-- 固定 `target_sizes`: `[[32, 32]]`
+- 固定 `image_size`: `[448, 448]`
+- 固定 `downsample_mode`: `"16x"`
 - 输出 `image_features`: `[1, 64, 1024]`
 
 说明：
 
 - 该脚本依赖 `transformers>=5.7.0`
 - 由于模型较大，PyTorch ONNX 导出通常会使用 external data 格式；请整体保留输出目录，不要只拷贝单个 `.onnx`
+- 当前导出路径会把 MiniCPM-V-4.6 的 fixed-shape 位置编码与 `vit_merger` 窗口注意力展开为静态图，避免生成 `Range` 节点和大扇出 `Concat`，以便后续 `pulsar2 build`
 - 当前只导出单图 fixed-shape Vision 编码器，不覆盖视频专用重新打包逻辑
 - 当前仓库不提供 Vision calibration 与 axmodel 编译脚本；如需直接运行，请继续使用已验证发布包
 
@@ -138,6 +140,13 @@ shape 约束：
 - 当前默认 `patch_size=14`
 - 输入高宽需要是 `56` 的整数倍
 - 常用 fixed shape 示例：`448x448`、`392x392`、`560x560`
+
+当前开发侧已经额外验证过以下闭环：
+
+- 使用 `python export_onnx.py --model "$HF_MODEL" --output ./vit-models/minicpmv4_6_vision_448.onnx` 导出的 `448x448 / 16x` Vision ONNX 可以在标准 `pulsar2 build` 流程下成功编译为 AX650 `axmodel`
+- 编译得到的 Vision `axmodel` 已在 AX650 板端完成 `ax_run_model --skip-running` 加载检查
+- 结合已发布的 MiniCPM-V-4.6 文本主干产物，在板端 `python/infer_axmodel.py` 单图 smoke test 中可以正常生成图片描述
+- 新编译 Vision `axmodel` 与 Hugging Face 发布包中的已验证 `minicpmv4_6_vision_448.axmodel` 特征输出接近，但不是逐 bit 相同；如果你的目标是严格复现发布包结果，请直接使用发布包中的 Vision `axmodel`
 
 ## 已验证配置
 
