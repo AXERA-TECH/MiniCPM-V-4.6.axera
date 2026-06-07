@@ -35,30 +35,19 @@ model_convert/
 
 Vision ONNX 导出与 `pulsar2 llm_build` 分别依赖不同环境。
 
-Vision ONNX 导出请先准备 `hf` 环境：
+Vision ONNX 导出相关命令在以下依赖版本下验证：
 
-- `transformers>=5.7.0`
-- `torch`
-- `torchvision`
-- `av`
-- `onnx`
+- `transformers==5.7.0`
+- `torch==2.8.0`
+- `torchvision==0.23.0`
+- `av==17.0.1`
+- `onnx==1.21.0`
 
-推荐按下面方式进入环境并安装依赖：
+在 `model_convert/` 目录执行：
 
 ```bash
-env -u PYTHONPATH -u PYTHONHOME bash -lc '
-source /path/to/conda.sh
-conda activate hf
-cd /path/to/MiniCPM-V-4.6.axera/model_convert
 python -m pip install -r requirements.txt
-'
 ```
-
-说明：
-
-- `source /path/to/conda.sh` 仅表示进入你自己的 conda 环境初始化脚本，不依赖任何私有路径
-- 使用 `env -u PYTHONPATH -u PYTHONHOME` 是为了避免其他编译环境污染 `hf` 环境
-- 如果你的 shell 没有额外注入 `PYTHONPATH/PYTHONHOME`，也可以在 `conda activate hf` 后直接执行命令
 
 `pulsar2 llm_build` 相关命令需要 AXERA NPU 编译环境。请另外准备：
 
@@ -73,7 +62,7 @@ export INPUT_PATH=/path/to/openbmb/MiniCPM-V-4.6
 
 # 如果当前 shell 还没有进入编译环境，可以额外设置：
 # export CONDA_SH=/path/to/conda.sh
-# export CONDA_ENV=npu
+# export CONDA_ENV=<your_build_env>
 ```
 
 其中：
@@ -101,31 +90,28 @@ export INPUT_PATH=/path/to/openbmb/MiniCPM-V-4.6
 当前发布包使用固定 `448x448` 输入、`patch_size=14`、`downsample_mode=16x` 的 Vision 编码器。  
 `export_onnx.py` 默认导出这一固定 profile，也支持导出其他满足约束的 fixed-shape Vision ONNX。
 
-默认 `448x448` 导出命令：
+从 Hugging Face 下载原始模型权重，以下示例假设克隆到仓库同级目录 `hf-models/MiniCPM-V-4.6`，并用 `$HF_MODEL` 引用：
 
 ```bash
-env -u PYTHONPATH -u PYTHONHOME bash -lc '
-source /path/to/conda.sh
-conda activate hf
-cd /path/to/MiniCPM-V-4.6.axera/model_convert
-python export_onnx.py \
-  --model /path/to/openbmb/MiniCPM-V-4.6 \
-  --output ./vit-models/minicpmv4_6_vision_448.onnx
-'
+git clone https://huggingface.co/openbmb/MiniCPM-V-4.6 ../../hf-models/MiniCPM-V-4.6
+export HF_MODEL=../../hf-models/MiniCPM-V-4.6
 ```
 
-其他 fixed shape 示例（例如 `392x392`）：
+在 `model_convert/` 目录执行默认 `448x448` 导出命令：
 
 ```bash
-env -u PYTHONPATH -u PYTHONHOME bash -lc '
-source /path/to/conda.sh
-conda activate hf
-cd /path/to/MiniCPM-V-4.6.axera/model_convert
 python export_onnx.py \
-  --model /path/to/openbmb/MiniCPM-V-4.6 \
+  --model "$HF_MODEL" \
+  --output ./vit-models/minicpmv4_6_vision_448.onnx
+```
+
+如果需要导出其他 fixed shape，例如 `392x392`，在 `model_convert/` 目录执行：
+
+```bash
+python export_onnx.py \
+  --model "$HF_MODEL" \
   --output ./vit-models/minicpmv4_6_vision_392.onnx \
   --input-shape 392x392
-'
 ```
 
 导出完成后会同时生成：
@@ -143,17 +129,15 @@ python export_onnx.py \
 说明：
 
 - 该脚本依赖 `transformers>=5.7.0`
-- 导出时默认使用 `--attn-implementation eager`，以规避当前 `sdpa + enable_gqa=True` 的 ONNX 导出限制
 - 由于模型较大，PyTorch ONNX 导出通常会使用 external data 格式；请整体保留输出目录，不要只拷贝单个 `.onnx`
 - 当前只导出单图 fixed-shape Vision 编码器，不覆盖视频专用重新打包逻辑
 - 当前仓库不提供 Vision calibration 与 axmodel 编译脚本；如需直接运行，请继续使用已验证发布包
 
 shape 约束：
 
-- `height` 和 `width` 必须能被 `patch_size * 4` 整除
-- 当前默认 `patch_size=14`，因此输入尺寸必须能被 `56` 整除
-- `448x448`、`392x392`、`560x560` 是有效示例
-- `384x384` 不是有效 shape，不能用于当前 fixed-shape patch merge 导出路径
+- 当前默认 `patch_size=14`
+- 输入高宽需要是 `56` 的整数倍
+- 常用 fixed shape 示例：`448x448`、`392x392`、`560x560`
 
 ## 已验证配置
 
@@ -181,8 +165,8 @@ shape 约束：
 从 Hugging Face 下载 BF16 原始模型权重，并用 `$INPUT_PATH` 指向该目录：
 
 ```bash
-git clone https://huggingface.co/openbmb/MiniCPM-V-4.6 /path/to/original/MiniCPM-V-4.6
-export INPUT_PATH=/path/to/original/MiniCPM-V-4.6
+git clone https://huggingface.co/openbmb/MiniCPM-V-4.6 ../../hf-models/MiniCPM-V-4.6
+export INPUT_PATH=../../hf-models/MiniCPM-V-4.6
 ```
 
 ### GPTQ 权重
@@ -190,8 +174,8 @@ export INPUT_PATH=/path/to/original/MiniCPM-V-4.6
 GPTQ 输入权重从 `openbmb/MiniCPM-V-4.6-GPTQ` 获取。该仓库是官方提供的 W4A16 GPTQModel 量化版本：
 
 ```bash
-git clone https://huggingface.co/openbmb/MiniCPM-V-4.6-GPTQ /path/to/original/MiniCPM-V-4.6-GPTQ
-export INPUT_PATH=/path/to/original/MiniCPM-V-4.6-GPTQ
+git clone https://huggingface.co/openbmb/MiniCPM-V-4.6-GPTQ ../../hf-models/MiniCPM-V-4.6-GPTQ
+export INPUT_PATH=../../hf-models/MiniCPM-V-4.6-GPTQ
 ```
 
 BF16 和 GPTQ 原始权重都不提交到本仓库。
