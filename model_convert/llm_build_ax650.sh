@@ -4,7 +4,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
-: "${INPUT_PATH:?Please set INPUT_PATH to your original openbmb/MiniCPM-V-4.6 Hugging Face model path}"
+DEFAULT_BF16_INPUT="$SCRIPT_DIR/hf-models/MiniCPM-V-4.6"
+DEFAULT_GPTQ_INPUT="$SCRIPT_DIR/hf-models/MiniCPM-V-4.6-GPTQ"
+
+if [ -z "${INPUT_PATH:-}" ]; then
+  if [ -f "$DEFAULT_BF16_INPUT/config.json" ]; then
+    INPUT_PATH="$DEFAULT_BF16_INPUT"
+  elif [ -f "$DEFAULT_GPTQ_INPUT/config.json" ]; then
+    INPUT_PATH="$DEFAULT_GPTQ_INPUT"
+  else
+    echo "Please set INPUT_PATH, or clone the original model into one of:" >&2
+    echo "  $DEFAULT_BF16_INPUT" >&2
+    echo "  $DEFAULT_GPTQ_INPUT" >&2
+    exit 1
+  fi
+fi
 
 if [ -n "${CONDA_SH:-}" ]; then
   source "$CONDA_SH"

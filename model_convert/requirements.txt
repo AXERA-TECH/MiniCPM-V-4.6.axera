@@ -1,3 +1,5 @@
+numpy
+Pillow
 torch
 torchvision
 transformers[torch]>=5.7.0

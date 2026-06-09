@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+*.tar
 vision_cache/
 *.tmp
 *.onnx
@@ -15,3 +16,13 @@ vision_cache/
 compiled*/
 build*/
 *tmp/
+.agent_docs/
+model_convert/hf-models/*
+!model_convert/hf-models/README.md
+model_convert/datasets/*
+!model_convert/datasets/README.md
+model_convert/pulsar2_configs/*
+!model_convert/pulsar2_configs/README.md
+!model_convert/pulsar2_configs/config_vision_448_npu3.json
+model_convert/vit-models/*
+!model_convert/vit-models/README.md
